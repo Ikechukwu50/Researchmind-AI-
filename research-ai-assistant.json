@@ -1,0 +1,274 @@
+{
+  "name": "Research AI Assistant — Telegram",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": ["message"],
+        "additionalFields": {}
+      },
+      "id": "telegram-trigger",
+      "name": "📩 Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300],
+      "webhookId": "research-bot-webhook",
+      "credentials": {
+        "telegramApi": {
+          "id": "YOUR_TELEGRAM_CREDENTIAL_ID",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const msg = $input.first().json;\nconst text = msg?.message?.text || '';\nconst chatId = msg?.message?.chat?.id;\nconst firstName = msg?.message?.from?.first_name || 'Researcher';\n\n// Strip /research command prefix if used\nconst query = text.replace(/^\\/research\\s*/i, '').trim();\n\nreturn [{\n  json: {\n    chatId,\n    firstName,\n    query,\n    rawText: text,\n    isCommand: text.startsWith('/')\n  }\n}];"
+      },
+      "id": "parse-message",
+      "name": "🔍 Parse Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "empty-check",
+              "leftValue": "={{ $json.query }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "has-query",
+      "name": "❓ Has Query?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('🔍 Parse Message').item.json.chatId }}",
+        "text": "👋 Hi {{ $('🔍 Parse Message').item.json.firstName }}! I'm your Research AI Assistant.\n\nJust send me any question or topic and I'll research it for you.\n\n📌 Examples:\n• *What is RAG in AI?*\n• *Latest news on Bitcoin ETF*\n• *Explain DeFi yield farming*\n\nWhat would you like to research today?",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "send-help",
+      "name": "💬 Send Help Message",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [900, 460],
+      "credentials": {
+        "telegramApi": {
+          "id": "YOUR_TELEGRAM_CREDENTIAL_ID",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "🔎 Researching: *{{ $json.query }}*\n\n_Please wait a moment..._",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "send-typing",
+      "name": "⏳ Send Thinking Message",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [900, 300],
+      "credentials": {
+        "telegramApi": {
+          "id": "YOUR_TELEGRAM_CREDENTIAL_ID",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "https://serpapi.com/search",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "q", "value": "={{ $('🔍 Parse Message').item.json.query }}" },
+            { "name": "api_key", "value": "YOUR_SERPAPI_KEY" },
+            { "name": "num", "value": "5" },
+            { "name": "hl", "value": "en" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "web-search",
+      "name": "🌐 Web Search (SerpAPI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const searchData = $input.first().json;\nconst query = $('🔍 Parse Message').item.json.query;\n\n// Extract organic results\nconst results = searchData.organic_results || [];\nconst snippets = results.slice(0, 5).map((r, i) => {\n  return `[${i+1}] ${r.title}\\nSource: ${r.link}\\nSummary: ${r.snippet || 'No snippet'}`;\n}).join('\\n\\n');\n\n// Also check knowledge graph\nconst kg = searchData.knowledge_graph;\nlet kgInfo = '';\nif (kg) {\n  kgInfo = `\\n\\nKnowledge Graph: ${kg.title || ''} — ${kg.description || ''}`;\n}\n\nconst contextText = snippets + kgInfo || 'No search results found. Answer from your own knowledge.';\n\nreturn [{\n  json: {\n    query,\n    contextText,\n    chatId: $('🔍 Parse Message').item.json.chatId,\n    firstName: $('🔍 Parse Message').item.json.firstName\n  }\n}];"
+      },
+      "id": "build-context",
+      "name": "📄 Build Research Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "model": "llama-3.3-70b-versatile",
+          "max_tokens": 1024,
+          "temperature": 0.4,
+          "messages": [
+            {
+              "role": "system",
+              "content": "You are a sharp, knowledgeable Research AI Assistant. You receive a user's research query and web search results. Your job is to synthesize the information into a clear, accurate, and well-structured response. Format for Telegram using plain text with emojis for structure. Keep responses concise but thorough. Always cite sources when available by mentioning the site name. End with a 💡 Key Takeaway. Do NOT use markdown bold (**) — use plain text structure instead."
+            },
+            {
+              "role": "user",
+              "content": "Research Query: {{ $json.query }}\n\nWeb Search Results:\n{{ $json.contextText }}\n\nPlease provide a comprehensive research summary answering the query above."
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "groq-ai",
+      "name": "🤖 Groq AI (Llama 3.3)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1560, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_GROQ_CREDENTIAL_ID",
+          "name": "Groq API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const groqResponse = $input.first().json;\nconst aiAnswer = groqResponse?.choices?.[0]?.message?.content || 'Sorry, I could not generate a response.';\nconst chatId = $('📄 Build Research Context').item.json.chatId;\nconst query = $('📄 Build Research Context').item.json.query;\n\n// Truncate if too long for Telegram (max 4096 chars)\nconst maxLen = 3800;\nlet finalAnswer = aiAnswer;\nif (aiAnswer.length > maxLen) {\n  finalAnswer = aiAnswer.substring(0, maxLen) + '...\\n\\n[Response truncated]';\n}\n\nconst message = `🔬 Research Result\\n\\n📌 Query: ${query}\\n\\n${finalAnswer}`;\n\nreturn [{\n  json: {\n    chatId,\n    message\n  }\n}];"
+      },
+      "id": "format-response",
+      "name": "✍️ Format Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1780, 300]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "parse_mode": ""
+        }
+      },
+      "id": "send-result",
+      "name": "📤 Send Research Result",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [2000, 300],
+      "credentials": {
+        "telegramApi": {
+          "id": "YOUR_TELEGRAM_CREDENTIAL_ID",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('🔍 Parse Message').item.json.chatId }}",
+        "text": "❌ Oops! Something went wrong while researching your query. Please try again in a moment.",
+        "additionalFields": {}
+      },
+      "id": "error-handler",
+      "name": "⚠️ Error Message",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1560, 500],
+      "credentials": {
+        "telegramApi": {
+          "id": "YOUR_TELEGRAM_CREDENTIAL_ID",
+          "name": "Telegram Bot"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "📩 Telegram Trigger": {
+      "main": [
+        [{ "node": "🔍 Parse Message", "type": "main", "index": 0 }]
+      ]
+    },
+    "🔍 Parse Message": {
+      "main": [
+        [{ "node": "❓ Has Query?", "type": "main", "index": 0 }]
+      ]
+    },
+    "❓ Has Query?": {
+      "main": [
+        [{ "node": "⏳ Send Thinking Message", "type": "main", "index": 0 }],
+        [{ "node": "💬 Send Help Message", "type": "main", "index": 0 }]
+      ]
+    },
+    "⏳ Send Thinking Message": {
+      "main": [
+        [{ "node": "🌐 Web Search (SerpAPI)", "type": "main", "index": 0 }]
+      ]
+    },
+    "🌐 Web Search (SerpAPI)": {
+      "main": [
+        [{ "node": "📄 Build Research Context", "type": "main", "index": 0 }]
+      ]
+    },
+    "📄 Build Research Context": {
+      "main": [
+        [{ "node": "🤖 Groq AI (Llama 3.3)", "type": "main", "index": 0 }]
+      ]
+    },
+    "🤖 Groq AI (Llama 3.3)": {
+      "main": [
+        [{ "node": "✍️ Format Response", "type": "main", "index": 0 }]
+      ]
+    },
+    "✍️ Format Response": {
+      "main": [
+        [{ "node": "📤 Send Research Result", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": ["telegram", "research", "ai", "groq", "free-tier"],
+  "pinData": {}
+}
